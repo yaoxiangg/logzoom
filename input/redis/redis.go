@@ -28,6 +28,7 @@ type Config struct {
 	InputQueue   string `yaml:"input_queue"`
 	WorkingQueue string `yaml:"working_queue"`
 	JsonDecode   bool   `yaml:"json_decode"`
+	LogType    []string `yaml:"type"`
 }
 
 type RedisInputServer struct {
@@ -45,7 +46,6 @@ func init() {
 func redisGet(redisServer *RedisInputServer, consumer *redismq.Consumer) error {
 	consumer.ResetWorking()
 	rateCounter := ratecounter.NewRateCounter(1 * time.Second)
-
 	for {
 		unacked := consumer.GetUnackedLength()
 
@@ -72,18 +72,20 @@ func redisGet(redisServer *RedisInputServer, consumer *redismq.Consumer) error {
 				var ev buffer.Event
 				payload := string(packages[i].Payload)
 				ev.Text = &payload
-
 				if redisServer.config.JsonDecode {
 					decoder := json.NewDecoder(strings.NewReader(payload))
 					decoder.UseNumber()
 
 					err = decoder.Decode(&ev.Fields)
-
 					if err != nil {
 						continue
 					}
 				}
-
+                if (ev.Fields == nil) {
+                    field_map := (make(map[string]interface{}))
+                    ev.Fields = &field_map
+                }
+                (*ev.Fields)["log_type"] = consumer.Name
 				redisServer.receiver.Send(&ev)
 			}
 		} else {
@@ -142,22 +144,19 @@ func (redisServer *RedisInputServer) Start() error {
 		redisServer.config.WorkingQueue)
 
 	port := strconv.Itoa(redisServer.config.Port)
-
-	// Create Redis queue
-	queue := redismq.CreateQueue(redisServer.config.Host,
-		port,
-		redisServer.config.Password,
-		redisServer.config.Db,
-		redisServer.config.InputQueue)
-
-	consumer, err := queue.AddConsumer(redisServer.config.WorkingQueue)
-
-	if err != nil {
-		log.Println("Error opening Redis input")
-		return err
-	}
-
-	go redisGet(redisServer, consumer)
+    for _, logType := range redisServer.config.LogType {
+	    queue := redismq.CreateQueue(redisServer.config.Host,
+		    port,
+		    redisServer.config.Password,
+		    redisServer.config.Db,
+		    logType + "_" + redisServer.config.InputQueue)
+	    consumer, err := queue.AddConsumer(logType + "_" + redisServer.config.WorkingQueue)
+	    if err != nil {
+		    log.Println("Error opening Redis input")
+		    return nil
+	    }
+	    go redisGet(redisServer, consumer)
+    }
 
 	for {
 		select {

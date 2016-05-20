@@ -2,17 +2,20 @@
 inputs:
   redis:
     db: 10
-    host: localhost
-    input_queue: s3
-    working_queue: s3_1
+    host: "localhost"
     port: 6379
+    input_queue: "s3"
+    working_queue: "s3_working"
+    type: ["type1", "type2"]
 outputs:
   s3:
-    aws_key_id: <YOUR KEY HERE>
-    aws_sec_key: <YOUR SECRET HERE>
-    aws_s3_bucket: your-s3-bucket
-    aws_s3_region: us-west-1
+    aws_key_id: < YOUR AWS ID >
+    aws_sec_key: < YOUR AWS KEY >
+    aws_s3_bucket: < AWS BUCKET >
+    aws_s3_region: < AWS BUCKET REGION >
     local_path: /tmp
-    s3_path: your-s3-path
-    time_slice_format: %Y-%m-%d/%H%M
-    aws_s3_output_key: %{path}/%{timeSlice}/%{hostname}_%{uuid}.gz
+    working_queue: "s3_working"
+    type: ["type1", "type2"]
+    s3_path: ["path1", "path2"]
+    time_slice_format: "%Y-%m-%d/%H%M"
+    aws_s3_output_key: "%{path}/%{timeSlice}/%{hostname}_%{uuid}.gz"

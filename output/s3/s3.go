@@ -31,6 +31,8 @@ const (
 	maxSimultaneousUploads = 8
 )
 
+var index_map = map[string]int{}
+
 func uuid() string {
 	b := make([]byte, 16)
 	rand.Read(b)
@@ -44,9 +46,10 @@ type Config struct {
 	AwsSecKey   string `yaml:"aws_sec_key"`
 	AwsS3Bucket string `yaml:"aws_s3_bucket"`
 	AwsS3Region string `yaml:"aws_s3_region"`
-
+    InputQueue  string `yaml:"input_queue"`
+    LogType   []string `yaml:"type"`
 	LocalPath       string `yaml:"local_path"`
-	Path            string `yaml:"s3_path"`
+	Path          []string `yaml:"s3_path"`
 	TimeSliceFormat string `yaml:"time_slice_format"`
 	AwsS3OutputKey  string `yaml:"aws_s3_output_key"`
 }
@@ -54,6 +57,7 @@ type Config struct {
 type OutputFileInfo struct {
 	Filename string
 	Count    int
+    LogType   string
 }
 
 type FileSaver struct {
@@ -74,7 +78,8 @@ func (fileSaver *FileSaver) WriteToFile(event *buffer.Event) error {
 
 		fileSaver.Writer = gzip.NewWriter(file)
 		fileSaver.FileInfo.Filename = file.Name()
-		fileSaver.FileInfo.Count = 0
+		fileSaver.FileInfo.LogType = (*event.Fields)["log_type"].(string)
+        fileSaver.FileInfo.Count = 0
 	}
 
 	text := *event.Text
@@ -110,9 +115,8 @@ func (s3Writer *S3Writer) doUpload(fileInfo OutputFileInfo) error {
 	curTime := time.Now()
 	hostname, _ := os.Hostname()
 	timeKey := strftime.Format(s3Writer.Config.TimeSliceFormat, curTime)
-
 	valuesForKey := map[string]string{
-		"path":      s3Writer.Config.Path,
+		"path":      s3Writer.Config.Path[index_map[fileInfo.LogType]],
 		"timeSlice": timeKey,
 		"hostname":  hostname,
 		"uuid":      uuid(),
@@ -225,15 +229,21 @@ func (s3Writer *S3Writer) Init(config yaml.MapSlice, sender buffer.Sender) error
 	if err := s3Writer.ValidateConfig(s3Config); err != nil {
 		return fmt.Errorf("Error in config: %v", err)
 	}
-
 	s3Writer.uploadChannel = make(chan OutputFileInfo, maxSimultaneousUploads)
 	s3Writer.Config = *s3Config
 	s3Writer.Sender = sender
-
+    
 	aws_access_key_id := s3Writer.Config.AwsKeyId
 	aws_secret_access_key := s3Writer.Config.AwsSecKey
 
-	token := ""
+    if len(s3Writer.Config.LogType) != len(s3Writer.Config.Path) {
+        return fmt.Errorf("Mismatch between log_type and path associated with it")
+    }
+
+    for index, key := range s3Writer.Config.LogType {
+        index_map[key + "_" + s3Writer.Config.InputQueue] = index
+    }
+    token := ""
 	creds := credentials.NewStaticCredentials(aws_access_key_id, aws_secret_access_key, token)
 	_, err := creds.Get()
 

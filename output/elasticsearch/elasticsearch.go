@@ -28,7 +28,7 @@ const (
 type Indexer struct {
 	bulkService       *elastic.BulkService
 	indexPrefix       string
-	indexType         string
+	indexType         []string
 	RateCounter       *ratecounter.RateCounter
 	lastDisplayUpdate time.Time
 }
@@ -36,7 +36,8 @@ type Indexer struct {
 type Config struct {
 	Hosts           []string `yaml:"hosts"`
 	IndexPrefix     string   `yaml:"index"`
-	IndexType       string   `yaml:"index_type"`
+    InputQueue      string   `yaml:"working_queue"`
+	LogType         []string `yaml:"type"`
 	Timeout         int      `yaml:"timeout"`
 	GzipEnabled     bool     `yaml:"gzip_enabled"`
 	InfoLogEnabled  bool     `yaml:"info_log_enabled"`
@@ -50,6 +51,8 @@ type ESServer struct {
 	b      buffer.Sender
 	term   chan bool
 }
+
+var index_map = map[string]string{}
 
 func init() {
 	output.Register("elasticsearch", &ESServer{
@@ -97,9 +100,8 @@ func (i *Indexer) flush() error {
 func (i *Indexer) index(ev *buffer.Event) error {
 	doc := *ev.Text
 	idx := indexName(i.indexPrefix)
-	typ := i.indexType
-
-	request := elastic.NewBulkIndexRequest().Index(idx).Type(typ).Doc(doc)
+    typ := index_map[(*ev.Fields)["log_type"].(string)]
+    request := elastic.NewBulkIndexRequest().Index(idx).Type(typ).Doc(doc)
 	i.bulkService.Add(request)
 	i.RateCounter.Incr(1)
 
@@ -121,7 +123,7 @@ func (e *ESServer) ValidateConfig(config *Config) error {
 		return errors.New("Missing index prefix (e.g. logstash)")
 	}
 
-	if len(config.IndexType) == 0 {
+	if len(config.LogType) == 0 {
 		return errors.New("Missing index type (e.g. logstash)")
 	}
 
@@ -140,6 +142,9 @@ func (e *ESServer) Init(config yaml.MapSlice, b buffer.Sender) error {
 	}
 
 	e.config = *esConfig
+    for _, key := range e.config.LogType {
+        index_map[key + "_" + e.config.InputQueue] = key
+    }
 	e.hosts = esConfig.Hosts
 	e.b = b
 
@@ -239,11 +244,11 @@ func (es *ESServer) Start() error {
 	receiveChan := make(chan *buffer.Event, esRecvBuffer)
 	es.b.AddSubscriber(es.host, receiveChan)
 	defer es.b.DelSubscriber(es.host)
-
+    log.Println(es.host);
 	rateCounter := ratecounter.NewRateCounter(1 * time.Second)
 
 	// Create indexer
-	idx := &Indexer{service, es.config.IndexPrefix, es.config.IndexType, rateCounter, time.Now()}
+	idx := &Indexer{service, es.config.IndexPrefix, es.config.LogType, rateCounter, time.Now()}
 
 	// Loop events and publish to elasticsearch
 	tick := time.NewTicker(time.Duration(esFlushInterval) * time.Second)

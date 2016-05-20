@@ -2,11 +2,12 @@
 inputs:
   filebeat:
       host: 0.0.0.0:5000
-      ssl_crt: /etc/filebeat/filebeat.crt
       ssl_key: /etc/filebeat/filebeat.key
+      ssl_crt: /etc/filebeat/filebeat.crt      
 outputs:
   redis:
       db: 10
       host: localhost
       copy_queues: ["elasticsearch", "s3"]
+      type: ["type1", "type2"]
       port: 6379

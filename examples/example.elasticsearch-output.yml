@@ -3,15 +3,17 @@ inputs:
   redis:
     db: 10
     host: localhost
-    input_queue: elasticsearch
-    working_queue: es_working
     port: 6379
+    input_queue: elasticsearch
+    working_queue:  es_working
+    type: ["type2", "type2"]
 outputs:
   elasticsearch:
+    working_queue:  es_working
+    type: ["type1", "type1"]
     hosts:
       - http://localhost:9200
     index: "logstash"
-    index_type: "logzoom"
     gzip_enabled: false
     info_log_enabled: true
     error_log_enabled: true

@@ -135,7 +135,7 @@ func (p *Parser) read() (uint32, error) {
 			ev.Text = &t
 			ev.Fields = &fields
 
-			// Send to the receiver which is a buffer. We block because...
+            // Send to the receiver which is a buffer. We block because...
 			p.Recv.Send(&ev)
 		case "2J": // JSON
 			//log.Printf("Got JSON data")
