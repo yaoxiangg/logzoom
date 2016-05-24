@@ -26,23 +26,25 @@ type Config struct {
 	Db           int64  `yaml:"db"`
 	Password     string `yaml:"password"`
 	InputQueue   string `yaml:"input_queue"`
-	WorkingQueue string `yaml:"working_queue"`
 	JsonDecode   bool   `yaml:"json_decode"`
 }
 
 type RedisInputServer struct {
+	instance []*RedisInputInstance
+}
+
+type RedisInputInstance struct {
+	name     string
 	config   Config
 	receiver input.Receiver
 	term     chan bool
 }
 
 func init() {
-	input.Register("redis", &RedisInputServer{
-		term: make(chan bool, 1),
-	})
+	input.Register("redis", &RedisInputServer{})
 }
 
-func redisGet(redisServer *RedisInputServer, consumer *redismq.Consumer) error {
+func redisGet(redisInstance *RedisInputInstance, consumer *redismq.Consumer) error {
 	consumer.ResetWorking()
 	rateCounter := ratecounter.NewRateCounter(1 * time.Second)
 
@@ -72,8 +74,7 @@ func redisGet(redisServer *RedisInputServer, consumer *redismq.Consumer) error {
 				var ev buffer.Event
 				payload := string(packages[i].Payload)
 				ev.Text = &payload
-
-				if redisServer.config.JsonDecode {
+				if redisInstance.config.JsonDecode {
 					decoder := json.NewDecoder(strings.NewReader(payload))
 					decoder.UseNumber()
 
@@ -84,7 +85,7 @@ func redisGet(redisServer *RedisInputServer, consumer *redismq.Consumer) error {
 					}
 				}
 
-				redisServer.receiver.Send(&ev)
+				redisInstance.receiver.Send(&ev)
 			}
 		} else {
 			log.Printf("Error reading from Redis: %s, sleeping", err)
@@ -108,60 +109,54 @@ func (redisServer *RedisInputServer) ValidateConfig(config *Config) error {
 		return errors.New("Missing Redis input queue name")
 	}
 
-	if len(config.WorkingQueue) == 0 {
-		return errors.New("Missing Redis working queue name")
-	}
-
 	return nil
 }
 
-func (redisServer *RedisInputServer) Init(config yaml.MapSlice, receiver input.Receiver) error {
+func (redisServer *RedisInputServer) InitInstance(name string, config yaml.MapSlice, receiver input.Receiver) (input.InputInstance, error) {
 	var redisConfig *Config
-
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
 	// See https://github.com/go-yaml/yaml/issues/13
 	yamlConfig, _ := yaml.Marshal(config)
 
 	if err := yaml.Unmarshal(yamlConfig, &redisConfig); err != nil {
-		return fmt.Errorf("Error parsing Redis config: %v", err)
+		return nil, fmt.Errorf("Error parsing Redis config: %v", err)
 	}
 
 	if err := redisServer.ValidateConfig(redisConfig); err != nil {
-		return fmt.Errorf("Error in config: %v", err)
+		return nil, fmt.Errorf("Error in config: %v", err)
 	}
 
-	redisServer.config = *redisConfig
-	redisServer.receiver = receiver
-
-	return nil
+	instance := &RedisInputInstance{name: name, config: *redisConfig, receiver: receiver, term: make(chan bool, 1)}
+	redisServer.instance = append(redisServer.instance, instance)
+	return instance, nil
 }
 
-func (redisServer *RedisInputServer) Start() error {
+func (redisInstance *RedisInputInstance) Start() error {
 	log.Printf("Starting Redis input on input queue: %s, working queue: %s",
-		redisServer.config.InputQueue,
-		redisServer.config.WorkingQueue)
+		redisInstance.config.InputQueue,
+		redisInstance.config.InputQueue + "_working")
 
-	port := strconv.Itoa(redisServer.config.Port)
+	port := strconv.Itoa(redisInstance.config.Port)
 
 	// Create Redis queue
-	queue := redismq.CreateQueue(redisServer.config.Host,
+	queue := redismq.CreateQueue(redisInstance.config.Host,
 		port,
-		redisServer.config.Password,
-		redisServer.config.Db,
-		redisServer.config.InputQueue)
+		redisInstance.config.Password,
+		redisInstance.config.Db,
+		redisInstance.config.InputQueue)
 
-	consumer, err := queue.AddConsumer(redisServer.config.WorkingQueue)
+	consumer, err := queue.AddConsumer(redisInstance.config.InputQueue + "_working")
 
 	if err != nil {
 		log.Println("Error opening Redis input")
 		return err
 	}
 
-	go redisGet(redisServer, consumer)
+	go redisGet(redisInstance, consumer)
 
 	for {
 		select {
-		case <-redisServer.term:
+		case <-redisInstance.term:
 			log.Println("Redis input server received term signal")
 			return nil
 		}
@@ -170,7 +165,12 @@ func (redisServer *RedisInputServer) Start() error {
 	return nil
 }
 
-func (redisServer *RedisInputServer) Stop() error {
-	redisServer.term <- true
+func (redisInstance *RedisInputInstance) Stop() error {
+	redisInstance.term <- true
 	return nil
 }
+
+func (redisServer *RedisInputServer) GetNumInstance() int {
+	return len(redisServer.instance)
+}
+

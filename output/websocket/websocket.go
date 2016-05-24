@@ -10,6 +10,7 @@ import (
 
 	"github.com/packetzoom/logzoom/buffer"
 	"github.com/packetzoom/logzoom/output"
+	"github.com/packetzoom/logzoom/route"
 	"golang.org/x/net/websocket"
 
 	"gopkg.in/yaml.v2"
@@ -24,12 +25,17 @@ type Config struct {
 }
 
 type WebSocketServer struct {
+	instance []*WebSocketInstance
+}
+
+type WebSocketInstance struct {
+	name string
+	fields map[string]string
 	host string
 	b    buffer.Sender
-	term chan bool
-
-	mtx  sync.RWMutex
 	logs map[string]time.Time
+	mtx  sync.RWMutex
+	term chan bool
 }
 
 var (
@@ -38,26 +44,23 @@ var (
 )
 
 func init() {
-	output.Register("websocket", &WebSocketServer{
-		logs: make(map[string]time.Time),
-		term: make(chan bool, 1),
-	})
+	output.Register("websocket", &WebSocketServer{})
 }
 
-func (ws *WebSocketServer) wslogsHandler(w *websocket.Conn) {
+func (wsi *WebSocketInstance) wslogsHandler(w *websocket.Conn) {
 	source := w.Request().FormValue("source")
 	host := fmt.Sprintf("%s/%d", w.RemoteAddr().String(), time.Now().UnixNano())
 
 	defer func() {
 		log.Printf("[%s] closing websocket conn", w.RemoteAddr().String())
-		ws.b.DelSubscriber(host)
+		wsi.b.DelSubscriber(host)
 		w.Close()
 	}()
 
-	log.Printf("[%s] accepting websocket conn", w.RemoteAddr().String())
+	log.Printf("[%s - %s] accepting websocket conn", wsi.name, w.RemoteAddr().String())
 
 	r := make(chan *buffer.Event, recvBuffer)
-	ws.b.AddSubscriber(host, r)
+	wsi.b.AddSubscriber(wsi.name, r)
 
 	for {
 		select {
@@ -67,17 +70,27 @@ func (ws *WebSocketServer) wslogsHandler(w *websocket.Conn) {
 					continue
 				}
 			}
-
-			err := websocket.Message.Send(w, *ev.Text)
-			if err != nil {
-				log.Printf("[%s] error sending ws message: %v", w.RemoteAddr().String(), err.Error())
-				return
+			//Add rule check here
+			var allowed bool
+			allowed = true
+			for key, value :=  range wsi.fields {
+				if ((*ev.Fields)[key] == nil || ((*ev.Fields)[key] != nil && value != (*ev.Fields)[key].(string))) {
+					allowed = false
+					break
+				}
+                        }
+                        if allowed {
+				err := websocket.Message.Send(w, *ev.Text)
+				if err != nil {
+					log.Printf("[%s - %s] error sending ws message: %v", wsi.name, w.RemoteAddr().String(), err.Error())
+					return
+				}
 			}
 		}
 	}
 }
 
-func (ws *WebSocketServer) logsHandler(w http.ResponseWriter, r *http.Request) {
+func (wsi *WebSocketInstance) logsHandler(w http.ResponseWriter, r *http.Request) {
 	source := "*"
 	host := fmt.Sprintf("ws://%s/wslogs", r.Host)
 
@@ -89,42 +102,43 @@ func (ws *WebSocketServer) logsHandler(w http.ResponseWriter, r *http.Request) {
 	logsTemplate.Execute(w, struct{ Source, Server string }{source, host})
 }
 
-func (ws *WebSocketServer) indexHandler(w http.ResponseWriter, r *http.Request) {
-	ws.mtx.RLock()
-	defer ws.mtx.RUnlock()
-	indexTemplate.Execute(w, ws.logs)
+func (wsi *WebSocketInstance) indexHandler(w http.ResponseWriter, r *http.Request) {
+	wsi.mtx.RLock()
+	defer wsi.mtx.RUnlock()
+	indexTemplate.Execute(w, wsi.logs)
 }
 
-func (ws *WebSocketServer) logListMaintainer() {
+func (wsi *WebSocketInstance) logListMaintainer() {
 	defer func() {
-		ws.b.DelSubscriber("logList")
+		wsi.b.DelSubscriber(wsi.name + "_logList")
 	}()
 
 	r := make(chan *buffer.Event, recvBuffer)
-	ws.b.AddSubscriber("logList", r)
+	wsi.b.AddSubscriber(wsi.name + "_logList", r)
 
 	ticker := time.NewTicker(time.Duration(600) * time.Second)
 
+	log.Printf("[%s] WebSocket Instance Started", wsi.name)
 	for {
 		select {
 		case ev := <-r:
-			ws.mtx.Lock()
-			ws.logs[ev.Source] = time.Now()
-			ws.mtx.Unlock()
+			wsi.mtx.Lock()
+			wsi.logs[ev.Source] = time.Now()
+			wsi.mtx.Unlock()
 		case <-ticker.C:
 			t := time.Now()
-			ws.mtx.Lock()
-			for log, ttl := range ws.logs {
+			wsi.mtx.Lock()
+			for log, ttl := range wsi.logs {
 				if t.Sub(ttl).Seconds() > 600 {
-					delete(ws.logs, log)
+					delete(wsi.logs, log)
 				}
 			}
-			ws.mtx.Unlock()
+			wsi.mtx.Unlock()
 		}
 	}
 }
 
-func (ws *WebSocketServer) Init(config yaml.MapSlice, b buffer.Sender) error {
+func (ws *WebSocketServer) InitInstance(name string, config yaml.MapSlice, b buffer.Sender, r route.Route) (output.OutputInstance, error) {
 	var wsConfig *Config
 
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
@@ -132,22 +146,25 @@ func (ws *WebSocketServer) Init(config yaml.MapSlice, b buffer.Sender) error {
 	yamlConfig, _ := yaml.Marshal(config)
 
 	if err := yaml.Unmarshal(yamlConfig, &wsConfig); err != nil {
-		return fmt.Errorf("Error parsing websocket config: %v", err)
+		return nil, fmt.Errorf("Error parsing websocket config: %v", err)
 	}
-
-	ws.host = wsConfig.Host
-	ws.b = b
-	return nil
+	instance := &WebSocketInstance{name: name, host: wsConfig.Host, b: b, fields: r.Fields, logs: make(map[string]time.Time), term: make(chan bool, 1)}
+	ws.instance = append(ws.instance, instance)
+	return instance, nil
 }
 
-func (ws *WebSocketServer) Start() error {
-	http.Handle("/wslogs", websocket.Handler(ws.wslogsHandler))
-	http.HandleFunc("/logs", ws.logsHandler)
-	http.HandleFunc("/", ws.indexHandler)
+func (wsi *WebSocketInstance) Start() error {
+	if (wsi.b == nil) {
+		log.Printf("[%s] No route is specified for this output", wsi.name)
+		return nil
+	}
+	http.Handle("/wslogs", websocket.Handler(wsi.wslogsHandler))
+	http.HandleFunc("/logs", wsi.logsHandler)
+	http.HandleFunc("/", wsi.indexHandler)
 
-	go ws.logListMaintainer()
+	go wsi.logListMaintainer()
 
-	err := http.ListenAndServe(ws.host, nil)
+	err := http.ListenAndServe(wsi.host, nil)
 	if err != nil {
 		return fmt.Errorf("Error starting websocket server: %v", err)
 	}
@@ -155,7 +172,12 @@ func (ws *WebSocketServer) Start() error {
 	return nil
 }
 
-func (ws *WebSocketServer) Stop() error {
-	ws.term <- true
+func (wsi *WebSocketInstance) Stop() error {
+	wsi.term <- true
 	return nil
 }
+
+func (ws *WebSocketServer) GetNumInstance() int {
+	return len(ws.instance)
+}
+

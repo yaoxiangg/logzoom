@@ -5,10 +5,15 @@ import (
 	"gopkg.in/yaml.v2"
 
 	"github.com/packetzoom/logzoom/buffer"
+	"github.com/packetzoom/logzoom/route"
 )
 
 type Output interface {
-	Init(yaml.MapSlice, buffer.Sender) error
+	InitInstance(string, yaml.MapSlice, buffer.Sender, route.Route) (OutputInstance, error)
+	GetNumInstance() int
+}
+
+type OutputInstance interface {
 	Start() error
 	Stop() error
 }

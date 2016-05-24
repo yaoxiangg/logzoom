@@ -12,7 +12,11 @@ type Receiver interface {
 }
 
 type Input interface {
-	Init(yaml.MapSlice, Receiver) error
+	InitInstance(string, yaml.MapSlice, Receiver) (InputInstance, error)
+	GetNumInstance() int
+}
+
+type InputInstance interface {
 	Start() error
 	Stop() error
 }

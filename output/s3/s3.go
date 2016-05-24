@@ -18,6 +18,7 @@ import (
 
 	"github.com/packetzoom/logzoom/buffer"
 	"github.com/packetzoom/logzoom/output"
+	"github.com/packetzoom/logzoom/route"
 
 	"github.com/jehiah/go-strftime"
 	"github.com/paulbellamy/ratecounter"
@@ -53,7 +54,7 @@ type Config struct {
 
 type OutputFileInfo struct {
 	Filename string
-	Count    int
+	Count	 int
 }
 
 type FileSaver struct {
@@ -63,10 +64,10 @@ type FileSaver struct {
 	RateCounter *ratecounter.RateCounter
 }
 
-func (fileSaver *FileSaver) WriteToFile(event *buffer.Event) error {
+func (fileSaver *FileSaver) WriteToFile(s3WriterInstance S3WriterInstance, event *buffer.Event) error {
 	if fileSaver.Writer == nil {
 		log.Println("Creating new S3 gzip writer")
-		file, err := ioutil.TempFile(fileSaver.Config.LocalPath, "s3_output_")
+		file, err := ioutil.TempFile(fileSaver.Config.LocalPath, s3WriterInstance.name)
 
 		if err != nil {
 			log.Printf("Error creating temporary file:", err)
@@ -98,7 +99,7 @@ func (fileSaver *FileSaver) WriteToFile(event *buffer.Event) error {
 	return nil
 }
 
-func (s3Writer *S3Writer) doUpload(fileInfo OutputFileInfo) error {
+func (s3WriterInstance *S3WriterInstance) doUpload(fileInfo OutputFileInfo) error {
 	log.Printf("Opening file %s\n", fileInfo.Filename)
 	reader, err := os.Open(fileInfo.Filename)
 
@@ -109,32 +110,31 @@ func (s3Writer *S3Writer) doUpload(fileInfo OutputFileInfo) error {
 
 	curTime := time.Now()
 	hostname, _ := os.Hostname()
-	timeKey := strftime.Format(s3Writer.Config.TimeSliceFormat, curTime)
+	timeKey := strftime.Format(s3WriterInstance.Config.TimeSliceFormat, curTime)
 
 	valuesForKey := map[string]string{
-		"path":      s3Writer.Config.Path,
+		"path":      s3WriterInstance.Config.Path,
 		"timeSlice": timeKey,
 		"hostname":  hostname,
 		"uuid":      uuid(),
 	}
 
-	destFile := s3Writer.Config.AwsS3OutputKey
+	destFile := s3WriterInstance.Config.AwsS3OutputKey
 
 	for key, value := range valuesForKey {
 		expr := "%{" + key + "}"
 		destFile = strings.Replace(destFile, expr, value, -1)
 	}
 
-	result, s3Error := s3Writer.S3Uploader.Upload(&s3manager.UploadInput{
+	result, s3Error := s3WriterInstance.S3Uploader.Upload(&s3manager.UploadInput{
 		Body:            reader,
-		Bucket:          aws.String(s3Writer.Config.AwsS3Bucket),
+		Bucket:          aws.String(s3WriterInstance.Config.AwsS3Bucket),
 		Key:             aws.String(destFile),
 		ContentEncoding: aws.String("gzip"),
 	})
 
-	log.Printf("%d events written to S3 %s", fileInfo.Count, result.Location)
-
 	if s3Error == nil {
+		log.Printf("[%s] %d events written to S3 %s", s3WriterInstance.name, fileInfo.Count, result.Location)
 		os.Remove(fileInfo.Filename)
 	} else {
 		log.Printf("Error uploading to S3", s3Error)
@@ -144,30 +144,36 @@ func (s3Writer *S3Writer) doUpload(fileInfo OutputFileInfo) error {
 
 }
 
-func (s3Writer *S3Writer) WaitForUpload() {
+func (s3WriterInstance *S3WriterInstance) WaitForUpload() {
 	for {
 		select {
-		case fileInfo := <-s3Writer.uploadChannel:
-			s3Writer.doUpload(fileInfo)
+		case fileInfo := <-s3WriterInstance.uploadChannel:
+			s3WriterInstance.doUpload(fileInfo)
 		}
 	}
 }
 
-func (s3Writer *S3Writer) InitiateUploadToS3(fileSaver *FileSaver) {
+func (s3WriterInstance *S3WriterInstance) InitiateUploadToS3(fileSaver *FileSaver) {
 	if fileSaver.Writer == nil {
 		return
 	}
 
-	log.Printf("Upload to S3, current event rate: %d/s\n", fileSaver.RateCounter.Rate())
+	log.Printf("[%s] Upload to S3, current event rate: %d/s\n", s3WriterInstance.name, fileSaver.RateCounter.Rate())
 	writer := fileSaver.Writer
 	fileInfo := fileSaver.FileInfo
 	fileSaver.Writer = nil
 	writer.Close()
 
-	s3Writer.uploadChannel <- fileInfo
+	s3WriterInstance.uploadChannel <- fileInfo
 }
 
 type S3Writer struct {
+	instance      []*S3WriterInstance
+}
+
+type S3WriterInstance struct {
+	name          string
+	fields        map[string]string
 	Config        Config
 	Sender        buffer.Sender
 	S3Uploader    *s3manager.Uploader
@@ -176,9 +182,7 @@ type S3Writer struct {
 }
 
 func init() {
-	output.Register("s3", &S3Writer{
-		term: make(chan bool, 1),
-	})
+	output.Register("s3", &S3Writer{})
 }
 
 func (s3Writer *S3Writer) ValidateConfig(config *Config) error {
@@ -211,7 +215,7 @@ func (s3Writer *S3Writer) ValidateConfig(config *Config) error {
 	return nil
 }
 
-func (s3Writer *S3Writer) Init(config yaml.MapSlice, sender buffer.Sender) error {
+func (s3Writer *S3Writer) InitInstance(name string, config yaml.MapSlice, sender buffer.Sender, route route.Route) (output.OutputInstance, error) {
 	var s3Config *Config
 
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
@@ -219,63 +223,73 @@ func (s3Writer *S3Writer) Init(config yaml.MapSlice, sender buffer.Sender) error
 	yamlConfig, _ := yaml.Marshal(config)
 
 	if err := yaml.Unmarshal(yamlConfig, &s3Config); err != nil {
-		return fmt.Errorf("Error parsing S3 config: %v", err)
+		return nil, fmt.Errorf("Error parsing S3 config: %v", err)
 	}
 
 	if err := s3Writer.ValidateConfig(s3Config); err != nil {
-		return fmt.Errorf("Error in config: %v", err)
+		return nil, fmt.Errorf("Error in config: %v", err)
 	}
 
-	s3Writer.uploadChannel = make(chan OutputFileInfo, maxSimultaneousUploads)
-	s3Writer.Config = *s3Config
-	s3Writer.Sender = sender
-
-	aws_access_key_id := s3Writer.Config.AwsKeyId
-	aws_secret_access_key := s3Writer.Config.AwsSecKey
+	aws_access_key_id := (*s3Config).AwsKeyId
+	aws_secret_access_key := (*s3Config).AwsSecKey
 
 	token := ""
 	creds := credentials.NewStaticCredentials(aws_access_key_id, aws_secret_access_key, token)
 	_, err := creds.Get()
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	session := session.New(&aws.Config{
-		Region:      &s3Writer.Config.AwsS3Region,
+		Region:      &((*s3Config).AwsS3Region),
 		Credentials: creds,
 	})
 
-	s3Writer.S3Uploader = s3manager.NewUploader(session)
-	log.Println("Done instantiating S3 uploader")
-
-	return nil
+	instance := &S3WriterInstance{name: name, fields: route.Fields, uploadChannel: make(chan OutputFileInfo, maxSimultaneousUploads), Config: *s3Config, Sender: sender, S3Uploader: s3manager.NewUploader(session), term: make(chan bool, 1)}
+	s3Writer.instance = append(s3Writer.instance, instance)
+	log.Printf("[%s] Done instantiating S3 uploader", name)
+	return instance, nil
 }
 
-func (s3Writer *S3Writer) Start() error {
+func (s3WriterInstance *S3WriterInstance) Start() error {
+	if (s3WriterInstance.Sender == nil) {
+		log.Printf("[%s] No route is specified for this output", s3WriterInstance.name)
+		return nil
+	}
 	// Create file saver
 	fileSaver := new(FileSaver)
-	fileSaver.Config = s3Writer.Config
+	fileSaver.Config = s3WriterInstance.Config
 	fileSaver.RateCounter = ratecounter.NewRateCounter(1 * time.Second)
 
-	id := "s3_output"
 	// Add the client as a subscriber
 	receiveChan := make(chan *buffer.Event, recvBuffer)
-	s3Writer.Sender.AddSubscriber(id, receiveChan)
-	defer s3Writer.Sender.DelSubscriber(id)
+	s3WriterInstance.Sender.AddSubscriber(s3WriterInstance.name, receiveChan)
+	defer s3WriterInstance.Sender.DelSubscriber(s3WriterInstance.name)
 
 	// Loop events and publish to S3
 	tick := time.NewTicker(time.Duration(s3FlushInterval) * time.Second)
 
-	go s3Writer.WaitForUpload()
+	log.Printf("[%s] S3Writer Instance Started", s3WriterInstance.name)
+	go s3WriterInstance.WaitForUpload()
 
 	for {
 		select {
 		case ev := <-receiveChan:
-			fileSaver.WriteToFile(ev)
+			var allowed bool
+			allowed = true
+			for key, value :=  range s3WriterInstance.fields {
+				if ((*ev.Fields)[key] == nil || ((*ev.Fields)[key] != nil && value != (*ev.Fields)[key].(string))) {
+					allowed = false
+					break
+				}
+                        }
+                        if allowed {
+				fileSaver.WriteToFile(*s3WriterInstance, ev)
+			}
 		case <-tick.C:
-			s3Writer.InitiateUploadToS3(fileSaver)
-		case <-s3Writer.term:
+			s3WriterInstance.InitiateUploadToS3(fileSaver)
+		case <-s3WriterInstance.term:
 			log.Println("S3Writer received term signal")
 			return nil
 		}
@@ -284,7 +298,12 @@ func (s3Writer *S3Writer) Start() error {
 	return nil
 }
 
-func (s *S3Writer) Stop() error {
-	s.term <- true
+func (s3WriterInstance *S3WriterInstance) Stop() error {
+	s3WriterInstance.term <- true
 	return nil
 }
+
+func (s *S3Writer) GetNumInstance() int {
+	return len(s.instance)
+}
+

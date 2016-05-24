@@ -17,6 +17,11 @@ type Config struct {
 }
 
 type LJServer struct {
+	instance []*LJInstance
+}
+
+type LJInstance struct {
+	name   string
 	Config *Config
 	r      input.Receiver
 	term   chan bool
@@ -30,7 +35,7 @@ func lumberConn(c net.Conn, r input.Receiver) {
 	log.Printf("[%s] closing lumberjack connection", c.RemoteAddr().String())
 }
 
-func (lj *LJServer) Init(config yaml.MapSlice, r input.Receiver) error {
+func (lj *LJServer) InitInstance (name string, config yaml.MapSlice, r input.Receiver) (input.InputInstance, error) {
 	var ljConfig *Config
 
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
@@ -38,16 +43,15 @@ func (lj *LJServer) Init(config yaml.MapSlice, r input.Receiver) error {
 	yamlConfig, _ := yaml.Marshal(config)
 
 	if err := yaml.Unmarshal(yamlConfig, &ljConfig); err != nil {
-		return fmt.Errorf("Error parsing lumberjack config: %v", err)
+		return nil, fmt.Errorf("Error parsing lumberjack config: %v", err)
 	}
 
-	lj.Config = ljConfig
-	lj.r = r
-
-	return nil
+	instance := &LJInstance{name: name, Config: ljConfig, r: r, term: make(chan bool, 1)}
+	lj.instance = append(lj.instance, instance)
+	return instance, nil
 }
 
-func (lj *LJServer) Start() error {
+func (lj *LJInstance) Start() error {
 	cert, err := tls.LoadX509KeyPair(lj.Config.SSLCrt, lj.Config.SSLKey)
 	if err != nil {
 		return fmt.Errorf("Error loading keys: %v", err)
@@ -61,7 +65,7 @@ func (lj *LJServer) Start() error {
 	config := tls.Config{Certificates: []tls.Certificate{cert}}
 
 	ln := tls.NewListener(conn, &config)
-
+	log.Printf("[%s] Started Lumberjack Instance", lj.name)
 	for {
 		select {
 		case <-lj.term:
@@ -80,7 +84,12 @@ func (lj *LJServer) Start() error {
 	return nil
 }
 
-func (lj *LJServer) Stop() error {
+func (lj *LJInstance) Stop() error {
 	lj.term <- true
 	return nil
 }
+
+func (lj *LJServer) GetNumInstance() int {
+	return len(lj.instance)
+}
+
