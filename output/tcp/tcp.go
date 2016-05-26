@@ -72,7 +72,7 @@ func (s *TCPServer) accept(c net.Conn) {
 
 }
 
-func (s *TCPServer) Init(name string, config yaml.MapSlice, b buffer.Sender, route route.Route) error {
+func (s *TCPServer) Init(name string, config yaml.MapSlice) error {
 	var tcpConfig *Config
 
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
@@ -84,8 +84,19 @@ func (s *TCPServer) Init(name string, config yaml.MapSlice, b buffer.Sender, rou
 	}
 
 	s.name = name
-	s.fields = route.Fields
 	s.host = tcpConfig.Host
+
+	return nil
+}
+
+func (s *TCPServer) Join (b buffer.Sender, route route.Route) error {
+	if (b == nil) {
+		return fmt.Errorf("[%s] Output has no sender", s.name)
+	}
+	if (&route == nil) {
+		return fmt.Errorf("[%s] Output has no route", s.name)
+	}
+	s.fields = route.Fields
 	s.b = b
 	return nil
 }

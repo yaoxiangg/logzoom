@@ -215,7 +215,7 @@ func (s3Writer *S3Writer) ValidateConfig(config *Config) error {
 	return nil
 }
 
-func (s3Writer *S3Writer) Init(name string, config yaml.MapSlice, sender buffer.Sender, route route.Route) error {
+func (s3Writer *S3Writer) Init(name string, config yaml.MapSlice) error {
 	var s3Config *Config
 
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
@@ -231,10 +231,8 @@ func (s3Writer *S3Writer) Init(name string, config yaml.MapSlice, sender buffer.
 	}
 
 	s3Writer.name = name
-	s3Writer.fields = route.Fields
 	s3Writer.uploadChannel = make(chan OutputFileInfo, maxSimultaneousUploads)
 	s3Writer.Config = *s3Config
-	s3Writer.Sender = sender
 	aws_access_key_id_data, error := ioutil.ReadFile(s3Writer.Config.AwsKeyIdLoc)
 	aws_access_key_id := strings.TrimSpace(string(aws_access_key_id_data))
 	if error != nil {
@@ -261,6 +259,18 @@ func (s3Writer *S3Writer) Init(name string, config yaml.MapSlice, sender buffer.
 	s3Writer.S3Uploader = s3manager.NewUploader(session)
 	log.Println("Done instantiating S3 uploader")
 
+	return nil
+}
+
+func (s3Writer *S3Writer) Join (sender buffer.Sender, route route.Route) error {
+	if (sender == nil) {
+		return fmt.Errorf("[%s] Output has no sender")
+	}
+	if (&route == nil) {
+		return fmt.Errorf("[%s] Output has no route")
+	}
+	s3Writer.fields = route.Fields
+	s3Writer.Sender = sender
 	return nil
 }
 

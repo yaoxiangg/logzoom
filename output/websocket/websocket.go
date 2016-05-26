@@ -131,7 +131,7 @@ func (ws *WebSocketServer) logListMaintainer() {
 	}
 }
 
-func (ws *WebSocketServer) Init(name string, config yaml.MapSlice, b buffer.Sender, route route.Route) error {
+func (ws *WebSocketServer) Init(name string, config yaml.MapSlice) error {
 	var wsConfig *Config
 
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
@@ -143,8 +143,18 @@ func (ws *WebSocketServer) Init(name string, config yaml.MapSlice, b buffer.Send
 	}
 
 	ws.name = name
-	ws.fields = route.Fields
 	ws.host = wsConfig.Host
+	return nil
+}
+
+func (ws *WebSocketServer) Join (b buffer.Sender, route route.Route) error {
+	if (b == nil) {
+		return fmt.Errorf("[%s] Output has no sender", ws.name)
+	}
+	if (&route == nil) {
+		return fmt.Errorf("[%s] Output has no route", ws.name)
+	}
+	ws.fields = route.Fields
 	ws.b = b
 	return nil
 }

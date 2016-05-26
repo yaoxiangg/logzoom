@@ -9,7 +9,8 @@ import (
 )
 
 type Output interface {
-	Init(string, yaml.MapSlice, buffer.Sender, route.Route) error
+	Init(string, yaml.MapSlice) error
+	Join(buffer.Sender, route.Route) error
 	Start() error
 	Stop() error
 }

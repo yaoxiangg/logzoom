@@ -12,7 +12,8 @@ type Receiver interface {
 }
 
 type Input interface {
-	Init(string, yaml.MapSlice, Receiver) error
+	Init(string, yaml.MapSlice) error
+	Join(Receiver) error
 	Start() error
 	Stop() error
 }

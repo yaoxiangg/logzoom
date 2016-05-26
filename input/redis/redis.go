@@ -113,7 +113,7 @@ func (redisServer *RedisInputServer) ValidateConfig(config *Config) error {
 	return nil
 }
 
-func (redisServer *RedisInputServer) Init(name string, config yaml.MapSlice, receiver input.Receiver) error {
+func (redisServer *RedisInputServer) Init(name string, config yaml.MapSlice) error {
 	var redisConfig *Config
 
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
@@ -130,12 +130,23 @@ func (redisServer *RedisInputServer) Init(name string, config yaml.MapSlice, rec
 
 	redisServer.name = name
 	redisServer.config = *redisConfig
-	redisServer.receiver = receiver
 
 	return nil
 }
 
+func (redisServer *RedisInputServer) Join(receiver input.Receiver) error {
+	if (receiver == nil) {
+		return fmt.Errorf("[%s] Input has no receiver", redisServer.name)
+	}
+	redisServer.receiver = receiver
+	return nil
+}
+
 func (redisServer *RedisInputServer) Start() error {
+	if (redisServer.receiver == nil) {
+                log.Printf("[%s] No Route is specified for this input", redisServer.name)
+                return nil
+        }
 	log.Printf("Starting Redis input on input queue: %s, working queue: %s",
 		redisServer.config.InputQueue,
 		redisServer.config.InputQueue + "_working")

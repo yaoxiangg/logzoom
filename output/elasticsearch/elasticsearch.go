@@ -135,7 +135,7 @@ func (e *ESServer) ValidateConfig(config *Config) error {
 	return nil
 }
 
-func (e *ESServer) Init(name string, config yaml.MapSlice, b buffer.Sender, route route.Route) error {
+func (e *ESServer) Init(name string, config yaml.MapSlice) error {
 	var esConfig *Config
 
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
@@ -147,11 +147,21 @@ func (e *ESServer) Init(name string, config yaml.MapSlice, b buffer.Sender, rout
 	}
 
 	e.name = name
-	e.fields = route.Fields
 	e.config = *esConfig
 	e.hosts = esConfig.Hosts
-	e.b = b
 
+	return nil
+}
+
+func (e *ESServer) Join (b buffer.Sender, route route.Route) error {
+	if (b == nil) {
+		return fmt.Errorf("[%s] Output has no sender", e.name)
+	}
+	if (&route == nil) {
+		return fmt.Errorf("[%s] Output has no route", e.name)
+	}
+	e.fields = route.Fields
+	e.b = b
 	return nil
 }
 

@@ -50,9 +50,53 @@ func (s *Server) Start() {
 
 	s.mtx.Lock()
 
-	// Start buffer
+	// Init inputs
+	for _, inputEntry := range s.Config.Inputs {
+		for name, inputConfig := range inputEntry {
+			for i, item := range inputConfig {
+				if i > 0 {
+					panic("There are more than one configuration specified for an input entry.")
+				}
+				if i == 0 { //There should be only 1 input per entry
+					in, err := input.Load(item.Key.(string))
+					if err != nil {
+						log.Println(err.Error)
+						continue
+					}
+					err = in.Init(name, item.Value.(yaml.MapSlice));
+					if err != nil {
+						log.Fatalf("Failed to init %s input: %v", item.Key, err)
+					}
+					s.inputs[name] = in
+				}
+			}
+		}
+	}
+	// Init outputs
+	for _, outputEntry := range s.Config.Outputs {
+		for name, outputConfig := range outputEntry {
+			for i, item := range outputConfig {
+				if i > 0 {
+					panic("There are more than one configuration specified for an output entry.")
+				}
+				if i == 0 { //There should be only 1 output per entry
+					out, err := output.Load(item.Key.(string))
+					if err != nil {
+						log.Println(err.Error)
+						continue
+					}
+					err = out.Init(name, item.Value.(yaml.MapSlice));
+					if err != nil {
+						log.Fatalf("Failed to init %s output: %v", item.Key, err)
+					}
+					s.outputs[name] = out
+				}
+			}
+		}
+	}
+
+	// Parse routes and Start buffer
 	log.Println("Starting buffer")
-	// Init routes
 	for _, routeEntry := range s.Config.Routes {
 		for name, routeDetails := range routeEntry {
 			var input string
@@ -80,73 +124,40 @@ func (s *Server) Start() {
 		}
 	}
 
-	// Start inputs
-	for _, inputEntry := range s.Config.Inputs {
-		for name, inputConfig := range inputEntry {
-			for i, item := range inputConfig {
-				if i > 0 {
-					panic("There are more than one configuration specified for an input entry.")
-				}
-				if i == 0 { //There should be only 1 input per entry
-					in, err := input.Load(item.Key.(string))
-					if err != nil {
-						log.Println(err.Error)
-						continue
-					}
-					err = in.Init(name, item.Value.(yaml.MapSlice), s.buffers[name]);
-					if err != nil {
-						log.Fatalf("Failed to init %s input: %v", item.Key, err)
-					}
-					go func(name string, in input.Input) {
-						if err := in.Start(); err != nil {
-							log.Fatalf("Error starting input %s: %v", item.Key, err)
-						}
-					} (name, in)
-					s.inputs[name] = in
-				}
+	// Join Inputs and Outputs to Routes
+	for route_name, value := range s.routes {
+		if s.inputs[value.Input] != nil {
+			err := s.inputs[value.Input].Join(s.buffers[value.Input]);
+			if err != nil {
+				log.Fatalf("Failed to Join %s input: %v", value.Input, err)
+			}
+		}
+		if s.outputs[value.Output] != nil {
+			err := s.outputs[value.Output].Join(s.buffers[value.Input], s.routes[route_name]);
+			if err != nil {
+				log.Fatalf("Failed to Join %s output: %v", value.Output, err)
 			}
 		}
 	}
-	// Start outputs
-	for _, outputEntry := range s.Config.Outputs {
-		for name, outputConfig := range outputEntry {
-			for i, item := range outputConfig {
-				if i > 0 {
-					panic("There are more than one configuration specified for an output entry.")
-				}
-				if i == 0 { //There should be only 1 output per entry
-					out, err := output.Load(item.Key.(string))
-					if err != nil {
-						log.Println(err.Error)
-						continue
-					}
-					init := false
-					for route_name, value := range s.routes {
-						if value.Output == name {
-							err = out.Init(name, item.Value.(yaml.MapSlice), s.buffers[value.Input], s.routes[route_name]);
-							if err != nil {
-								log.Fatalf("Failed to init %s input: %v", item.Key, err)
-							}
-							init = true
-							break
-						}
-					}
-					if init == false {
-						err = out.Init(name, item.Value.(yaml.MapSlice), nil, route.Route{Input: "", Output: "", Fields: make(map[string]string)});
-						if err != nil {
-							log.Fatalf("Failed to init %s output: %v", item.Key, err)
-						}
-					}
-					go func(name string, instance output.Output) {
-						if err := out.Start(); err != nil {
-							log.Fatalf("Error starting output %s: %v", item.Key, err)
-						}
-					} (name, out)
-					s.outputs[name] = out
-				}
+
+	// Start Inputs
+	for name, in := range s.inputs {
+		go func(name string, instance input.Input) {
+			if err := instance.Start(); err != nil {
+				log.Fatalf("Error starting input %s: %v", name, err)
 			}
-		}
+		} (name, in)
 	}
+
+	// Start Outputs
+	for name, out := range s.outputs {
+		go func(name string, instance output.Output) {
+			if err := instance.Start(); err != nil {
+				log.Fatalf("Error starting output %s: %v", name, err)
+			}
+		} (name, out)
+	}
+
 	s.mtx.Unlock()
 
 	// Wait for kill signal

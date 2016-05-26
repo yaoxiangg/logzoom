@@ -124,7 +124,7 @@ func (redisServer *RedisServer) ValidateConfig(config *Config) error {
 	return nil
 }
 
-func (redisServer *RedisServer) Init(name string, config yaml.MapSlice, sender buffer.Sender, route route.Route) error {
+func (redisServer *RedisServer) Init(name string, config yaml.MapSlice) error {
 	var redisConfig *Config
 
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
@@ -140,8 +140,18 @@ func (redisServer *RedisServer) Init(name string, config yaml.MapSlice, sender b
 	}
 
 	redisServer.name = name
-	redisServer.fields = route.Fields
 	redisServer.config = *redisConfig
+	return nil
+}
+
+func (redisServer *RedisServer) Join (sender buffer.Sender, route route.Route) error {
+	if (sender == nil) {
+		return fmt.Errorf("[%s] Output has no sender", redisServer.name)
+	}
+	if (&route == nil) {
+		return fmt.Errorf("[%s] Output has no route", redisServer.name)
+	}
+	redisServer.fields = route.Fields
 	redisServer.sender = sender
 	return nil
 }

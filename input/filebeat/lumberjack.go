@@ -35,7 +35,7 @@ func lumberConn(c net.Conn, r input.Receiver) {
 	log.Printf("[%s] closing lumberjack connection", c.RemoteAddr().String())
 }
 
-func (lj *LJServer) Init(name string, config yaml.MapSlice, r input.Receiver) error {
+func (lj *LJServer) Init(name string, config yaml.MapSlice) error {
 	var ljConfig *Config
 
 	// go-yaml doesn't have a great way to partially unmarshal YAML data
@@ -48,12 +48,23 @@ func (lj *LJServer) Init(name string, config yaml.MapSlice, r input.Receiver) er
 
 	lj.name = name
 	lj.Config = ljConfig
-	lj.r = r
 
 	return nil
 }
 
+func (lj *LJServer) Join(r input.Receiver) error {
+	if (lj == nil) {
+		return fmt.Errorf("[%s] Input has no receiver", lj.name)
+	}
+	lj.r = r
+	return nil
+}
+
 func (lj *LJServer) Start() error {
+	if (lj.r == nil) {
+		log.Printf("[%s] No Route is specified for this input", lj.name)
+		return nil
+	}
 	cert, err := tls.LoadX509KeyPair(lj.Config.SSLCrt, lj.Config.SSLKey)
 	if err != nil {
 		return fmt.Errorf("Error loading keys: %v", err)
