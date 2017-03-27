@@ -8,9 +8,11 @@ import (
 
 	_ "github.com/packetzoom/logzoom/input/filebeat"
 	_ "github.com/packetzoom/logzoom/input/redis"
+	_ "github.com/packetzoom/logzoom/input/persistent"
 	_ "github.com/packetzoom/logzoom/output/elasticsearch"
 	_ "github.com/packetzoom/logzoom/output/redis"
 	_ "github.com/packetzoom/logzoom/output/s3"
+	_ "github.com/packetzoom/logzoom/output/persistent"
 	_ "github.com/packetzoom/logzoom/output/tcp"
 	_ "github.com/packetzoom/logzoom/output/websocket"
 	"github.com/packetzoom/logzoom/server"

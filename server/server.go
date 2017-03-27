@@ -47,7 +47,6 @@ func New(configFile string) (*Server, error) {
 func (s *Server) Start() {
 	log.Println("Starting server")
 
-
 	s.mtx.Lock()
 
 	// Start buffer
