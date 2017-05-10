@@ -2,6 +2,7 @@ package persistent
 
 import (
 	"errors"
+	"compress/gzip"
 	"bufio"
 	"fmt"
 	"path/filepath"
@@ -27,6 +28,7 @@ type Config struct {
 	LocalPath     string `yaml:"local_path"`
 	FileTag       string `yaml:"file_tag"`
 	SampleSize    *int   `yaml:"sample_size,omitempty"`
+	GZipEncoded   bool   `yaml:"gzipencoded,omitempty"`
 }
 
 type PersistentInputServer struct {
@@ -61,8 +63,17 @@ func persistentRead(persistentServer *PersistentInputServer) error {
 					if error != nil {
 						log.Fatal(error)
 					}
-					counter := 0
+					defer file.Close()
 					scanner := bufio.NewScanner(file)
+					if (persistentServer.config.GZipEncoded) {
+						gr, err := gzip.NewReader(file)
+						if err != nil {
+							log.Fatal(error)
+						}
+						defer gr.Close();
+						scanner = bufio.NewScanner(gr)
+					}
+					counter := 0
 					for scanner.Scan() {
 						var ev buffer.Event
 						payload := scanner.Text()
@@ -75,7 +86,6 @@ func persistentRead(persistentServer *PersistentInputServer) error {
 						counter += 1
 					}
 					log.Println("Sent one file: " + file.Name() + " with " + strconv.Itoa(counter) + " records")
-					file.Close()
 					err = os.Rename(file.Name(), persistentServer.config.LocalPath+"/archive/"+filepath.Base(file.Name()))
 					if err != nil {
 						log.Fatal(err)

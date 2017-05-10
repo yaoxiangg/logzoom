@@ -24,6 +24,9 @@ import (
 	"github.com/jehiah/go-strftime"
 	"github.com/paulbellamy/ratecounter"
 
+	"github.com/bramvdbogaerde/go-scp/auth"
+	"github.com/bramvdbogaerde/go-scp"
+
 	"gopkg.in/yaml.v2"
 )
 
@@ -52,6 +55,10 @@ type Config struct {
 	TimeSliceFormat string `yaml:"time_slice_format"`
 	AwsS3OutputKey  string `yaml:"aws_s3_output_key"`
 	SampleSize      *int   `yaml:"sample_size,omitempty"`
+	ScpHost         string `yaml:"scp_host,omitempty"`
+	ScpPath         string `yaml:"scp_path,omitempty"`
+	ScpKey          string `yaml:"scp_key,omitempty"`
+	ScpUser         string `yaml:"scp_user,omitempty"`
 }
 
 type OutputFileInfo struct {
@@ -122,11 +129,18 @@ func (s3Writer *S3Writer) doUpload(fileInfo OutputFileInfo) error {
 	}
 
 	destFile := s3Writer.Config.AwsS3OutputKey
+	es_destFile := s3Writer.Config.AwsS3OutputKey
 
 	for key, value := range valuesForKey {
 		expr := "%{" + key + "}"
 		destFile = strings.Replace(destFile, expr, value, -1)
+		if (key != "hostname" && key != "uuid") {
+			es_destFile = strings.Replace(es_destFile, expr, "", -1)
+		} else {
+			es_destFile = strings.Replace(es_destFile, expr, value, -1)
+		}
 	}
+	es_destFile = strings.Replace(es_destFile, "/", "", -1)
 
 	result, s3Error := s3Writer.S3Uploader.Upload(&s3manager.UploadInput{
 		Body:            reader,
@@ -137,13 +151,25 @@ func (s3Writer *S3Writer) doUpload(fileInfo OutputFileInfo) error {
 
 	if s3Error == nil {
 		log.Printf("%d events written to S3 %s", fileInfo.Count, result.Location)
+		if s3Writer.Config.ScpHost != "" && s3Writer.Config.ScpPath != "" {
+			// Use SSH key authentication from the auth package
+			clientConfig, _ := auth.PrivateKey(s3Writer.Config.ScpUser, s3Writer.Config.ScpKey)
+			// Create a new SCP client
+			client := scp.NewClient(s3Writer.Config.ScpHost, &clientConfig)
+			err := client.Connect()
+			if err != nil{
+				fmt.Println("Couldn't establish a connection to the remote server ", err)
+				return err
+			}
+			defer client.Session.Close()
+			client.CopyFile(reader, s3Writer.Config.ScpPath + es_destFile, "0777")
+		}
 		os.Remove(fileInfo.Filename)
 	} else {
 		log.Printf("Error uploading to S3", s3Error)
 	}
 
 	return s3Error
-
 }
 
 func (s3Writer *S3Writer) WaitForUpload() {
@@ -198,9 +224,11 @@ func (s3Writer *S3Writer) ValidateConfig(config *Config) error {
 	}
 
 	// Try writing to local path
-	if _, err := ioutil.TempFile(config.LocalPath, "logzoom"); err != nil {
+	tmpfile, err := ioutil.TempFile(config.LocalPath, "logzoom");
+	if err != nil {
 		return errors.New("unable to write to " + config.LocalPath)
 	}
+	defer os.Remove(tmpfile.Name())
 
 	if len(config.AwsS3Bucket) == 0 {
 		return errors.New("missing AWS S3 bucket")
@@ -283,7 +311,7 @@ func (s3Writer *S3Writer) Start() error {
 	fileSaver.Config = s3Writer.Config
 	fileSaver.RateCounter = ratecounter.NewRateCounter(1 * time.Second)
 
-	id := "s3_output"
+	id := s3Writer.name
 	// Add the client as a subscriber
 	receiveChan := make(chan *buffer.Event, recvBuffer)
 	s3Writer.Sender.AddSubscriber(id, receiveChan)
