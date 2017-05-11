@@ -5,7 +5,6 @@ import (
 	"compress/gzip"
 	"bufio"
 	"fmt"
-	"path/filepath"
 	"log"
 	"strconv"
 	"os"
@@ -86,7 +85,7 @@ func persistentRead(persistentServer *PersistentInputServer) error {
 						counter += 1
 					}
 					log.Println("Sent one file: " + file.Name() + " with " + strconv.Itoa(counter) + " records")
-					err = os.Rename(file.Name(), persistentServer.config.LocalPath+"/archive/"+filepath.Base(file.Name()))
+					os.Remove(file.Name())
 					if err != nil {
 						log.Fatal(err)
 					}
