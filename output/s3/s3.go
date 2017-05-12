@@ -31,9 +31,9 @@ import (
 )
 
 const (
-	s3FlushInterval        = 10
+	s3FlushInterval        = 60
 	recvBuffer             = 10000
-	maxSimultaneousUploads = 8
+	maxSimultaneousUploads = 20
 )
 
 func uuid() string {
