@@ -59,6 +59,7 @@ type Config struct {
 	ScpPath         string `yaml:"scp_path,omitempty"`
 	ScpKey          string `yaml:"scp_key,omitempty"`
 	ScpUser         string `yaml:"scp_user,omitempty"`
+	AwsEnabled      bool   `yaml:"aws_enabled"`
 }
 
 type OutputFileInfo struct {
@@ -142,22 +143,41 @@ func (s3Writer *S3Writer) doUpload(fileInfo OutputFileInfo) error {
 	}
 	es_destFile = strings.Replace(es_destFile, "/", "", -1)
 
-	result, s3Error := s3Writer.S3Uploader.Upload(&s3manager.UploadInput{
-		Body:            reader,
-		Bucket:          aws.String(s3Writer.Config.AwsS3Bucket),
-		Key:             aws.String(destFile),
-		ContentEncoding: aws.String("gzip"),
-	})
-
-	if s3Error == nil {
-		log.Printf("%d events written to S3 %s", fileInfo.Count, result.Location)
+	if s3Writer.Config.AwsEnabled {
+		result, s3Error := s3Writer.S3Uploader.Upload(&s3manager.UploadInput{
+			Body:            reader,
+			Bucket:          aws.String(s3Writer.Config.AwsS3Bucket),
+			Key:             aws.String(destFile),
+			ContentEncoding: aws.String("gzip"),
+		})
+		if s3Error == nil {
+			log.Printf("%d events written to S3 %s", fileInfo.Count, result.Location)
+			if s3Writer.Config.ScpHost != "" && s3Writer.Config.ScpPath != "" {
+			// Use SSH key authentication from the auth package
+			clientConfig, _ := auth.PrivateKey(s3Writer.Config.ScpUser, s3Writer.Config.ScpKey)
+			// Create a new SCP client
+			client := scp.NewClient(s3Writer.Config.ScpHost, &clientConfig)
+			err := client.Connect()
+			if err != nil {
+				fmt.Println("Couldn't establish a connection to the remote server ", err)
+				return err
+			}
+			defer client.Session.Close()
+			client.CopyFile(reader, s3Writer.Config.ScpPath + es_destFile, "0777")
+			}
+			os.Remove(fileInfo.Filename)
+		} else {
+			log.Printf("Error uploading to S3", s3Error)
+		}
+		return s3Error
+	} else {
 		if s3Writer.Config.ScpHost != "" && s3Writer.Config.ScpPath != "" {
 			// Use SSH key authentication from the auth package
 			clientConfig, _ := auth.PrivateKey(s3Writer.Config.ScpUser, s3Writer.Config.ScpKey)
 			// Create a new SCP client
 			client := scp.NewClient(s3Writer.Config.ScpHost, &clientConfig)
 			err := client.Connect()
-			if err != nil{
+			if err != nil {
 				fmt.Println("Couldn't establish a connection to the remote server ", err)
 				return err
 			}
@@ -165,11 +185,8 @@ func (s3Writer *S3Writer) doUpload(fileInfo OutputFileInfo) error {
 			client.CopyFile(reader, s3Writer.Config.ScpPath + es_destFile, "0777")
 		}
 		os.Remove(fileInfo.Filename)
-	} else {
-		log.Printf("Error uploading to S3", s3Error)
+		return nil
 	}
-
-	return s3Error
 }
 
 func (s3Writer *S3Writer) WaitForUpload() {
